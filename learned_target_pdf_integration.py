@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Oct 28 23:49:36 2024
-
-@author: Ariel
+this file attempts to use numeric integration during training and scoring for
+learned target pdf
 """
 
 import pandas as pd
@@ -10,6 +9,7 @@ import numpy as np
 import torch
 import random
 import scipy
+import gc
 
 from pprint import pprint
 
@@ -62,35 +62,45 @@ t_train = train_df[target].values
 X_test = test_df[features].values
 t_test = test_df[target].values
 
+# %%
+
+target_range = [0,12]
+delta_t = 0.2
+t_range = np.arange(target_range[0], target_range[1]+delta_t, delta_t)
+
+# %%
+#def numeric_integral(function_tensor, delta_t):
+#    return torch.sum(function_tensor[1:] + function_tensor[0:-1],axis=1)/2 * delta_t
+
+def numeric_integral(function_tensor, delta_t):
+    return torch.sum(function_tensor * delta_t, axis=1)
 
 # %% torch device
 device = torch.device('cuda:0')
 
-# %% write custom gamma loss function
-class GammaLoss(Function):
+# %% write custom loss for learned target PDF using numeric integration
+class LearnedPDFIntegration(Function):
     
     @staticmethod
-    def forward(ctx, logtheta, logk, t):
+    def forward(ctx, y, *y_range):
         #import pdb; pdb.set_trace()
-        theta = torch.clamp(torch.exp(logtheta), min=0, max=100).to(device)
-        k = torch.clamp(torch.exp(logk), min=0, max=100).to(device)
-        ctx.save_for_backward(t, theta, k)
-        loss = torch.lgamma(k) + k * torch.log(theta) -\
-            (k-1)*torch.log(t) + t/theta
+        y_range = torch.stack(y_range, dim=1).to(device)
+        Z = numeric_integral(torch.exp(y_range), delta_t).to(device)
+        ctx.save_for_backward(y, y_range, Z)
+        loss = -y + torch.log(Z)
         return loss.mean()
     
     @staticmethod
     def backward(ctx, grad_output):
-        t, theta, k = ctx.saved_tensors
+        #import pdb; pdb.set_trace()
+        y, y_range, Z = ctx.saved_tensors
         
-        logtheta_grad = grad_output * (
-            k - t / theta
-            )
-        logk_grad = grad_output * (
-            k * torch.digamma(k) + k * torch.log(theta / t)
-            )
+        y_grad = -1 * grad_output * torch.ones(y.shape).to(device)
+        y_range_grad = torch.div(torch.exp(y_range) * delta_t, Z.reshape(-1,1))
+        
+        return y_grad, *y_range_grad.T
 
-        return logtheta_grad, logk_grad, None
+    
     
 # %% create nn dataset class
 class mlp_dataset(Dataset):
@@ -106,26 +116,66 @@ class mlp_dataset(Dataset):
         return torch.tensor(self.X[idx,:]).float(), torch.tensor(self.t[idx]).float()
     
 # %% create mlp class
-class gamma_mlp(nn.Module):
-    def __init__(self, vector_dim, mlp_dims, mlp_activation=nn.ReLU(), dropout=0.1):
+#MAKE THIS TAKE x AND t AS INPUT
+class learned_pdf_integral_mlp(nn.Module):
+    def __init__(self, vector_dim, mlp_dims, target_range, delta_t=0.01, 
+                 mlp_activation=nn.ReLU(), dropout=0.1):
         super().__init__()
         
-        mlp_dims = [vector_dim] + mlp_dims
+        self.t_range = torch.arange(target_range[0], target_range[1]+delta_t, delta_t).to(device)
+        self.n_range = len(self.t_range)
+        
+        mlp_dims = [vector_dim + 1] + mlp_dims
         mlp_layers = [
             layer
             for prev_num, num in zip(mlp_dims[0:-1], mlp_dims[1:])
             for layer in [nn.Linear(prev_num, num), nn.Dropout(dropout), mlp_activation]
             ]
         self.mlp = nn.Sequential(*mlp_layers)
-        self.logtheta_layer = nn.Linear(mlp_dims[-1], 1)
-        self.logk_layer = nn.Linear(mlp_dims[-1], 1)
+        self.y_layer = nn.Linear(mlp_dims[-1], 1)
+        #self.y_range_layer = nn.Linear(mlp_dims[-1], self.n_range)
         
-    def forward(self, x):
-        z = self.mlp(x)
-        logtheta = self.logtheta_layer(z)
-        logk = self.logk_layer(z)
-        return logtheta.squeeze(-1), logk.squeeze(-1)
+#    def forward(self, x, t):
+#        x_t = torch.cat([x, t.reshape(-1,1)], axis=1)
+#        z = self.mlp(x_t)
+#        y = self.y_layer(z)
+#        y_range = self.y_range_layer(z)
+#        return y.squeeze(-1), y_range
+
+    def forward(self, x, t):
+        x_t = torch.cat([x, t.reshape(-1,1)], axis=1)
+        z = self.mlp(x_t)
+        y = self.y_layer(z).squeeze(-1)
+        #t_range_repeat = self.t_range.repeat(len(t), 1)[:,:,None]
+        t_range_repeat = self.t_range.expand(len(t), len(t_range))[:,:,None]
+        x_reshape = x.unsqueeze(1).expand(x.shape[0], t_range_repeat.shape[1], x.shape[1])
+        
+        x_t_range = torch.cat([x_reshape, t_range_repeat], axis=2)
+        z_range = self.mlp(x_t_range)
+        y_range = self.y_layer(z_range).squeeze(-1)
+        
+        return y, y_range
     
+        #creating x_reshape and/or t_range (or x_t_range) takes forever,
+        #find a more efficient way to do this
+# %% 
+layer = nn.Linear(3,1)
+x = torch.randn([10,2])
+t = torch.randn([10,8])
+t_reshape = t[:,:, None]
+#x_reshape = x.unsqueeze(2).expand(10,2,8)
+x_reshape = x.unsqueeze(1).expand(10,8,2)
+
+x_t = torch.cat([x_reshape, t_reshape], axis=2)
+i=0
+layer(x_t[:,:,i])
+layer(torch.cat([x, t[:,i].reshape(-1,1)], axis=1))
+
+layer(x_t)
+
+
+x_t_reshape = x_t.reshape(-1, 3)
+y_range = layer()
 # %% function to evaluate dataset
 def eval_dataset(model, loss_function, dataloader, device):
     
@@ -133,9 +183,9 @@ def eval_dataset(model, loss_function, dataloader, device):
     epoch_loss = 0.0
     for x, t in dataloader:
         x, t = x.to(device), t.to(device)
-        logtheta, logk = model(x)
-        logtheta, logk = logtheta.to(device), logk.to(device)
-        loss = loss_function(logtheta, logk, t)
+        y, y_range = model(x,t)
+        y, y_range = y.to(device), y_range.to(device)
+        loss = loss_function(y, *y_range.T)
         batch_loss = loss.item()
         epoch_loss += batch_loss
         
@@ -155,12 +205,14 @@ test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
 # %% create model
 mlp_dims = [2048, 2048, 1024]
 dropout = 0.1
-mlp_activation = nn.ReLU()
-#mlp_activation = nn.Tanh()
+#mlp_activation = nn.ReLU()
+mlp_activation = nn.Tanh()
 
-model = gamma_mlp(
+model = learned_pdf_integral_mlp(
     vector_dim=X_train.shape[1],
     mlp_dims=mlp_dims,
+    target_range=target_range,
+    delta_t = delta_t,
     mlp_activation=mlp_activation,
     dropout=dropout
     )
@@ -169,20 +221,20 @@ model.to(device)
 
 # %% set up optimization
 learning_rate = 1e-5
-num_epochs=100
-weight_decay = 1e-4
+num_epochs=50
+weight_decay = 1e-3
 batch_update = 10
 seed = 124
 
 torch.manual_seed(seed)
 optimizer = torch.optim.AdamW(params=model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-loss_function = GammaLoss.apply
+loss_function = LearnedPDFIntegration.apply
 
 # %% perform training loop
 
-#torch.cuda.empty_cache()
-#gc.collect()
+torch.cuda.empty_cache()
+gc.collect()
 
 for epoch in range(num_epochs):
     print(f'Starting epoch {epoch+1}')
@@ -205,10 +257,11 @@ for epoch in range(num_epochs):
         optimizer.zero_grad()
         
         #get model outputs
-        logtheta, logk = model(x)
+        y, y_range = model(x, t)
+        y, y_range = y.to(device), y_range.to(device)
         
         #compute loss
-        loss = loss_function(logtheta, logk, t)
+        loss = loss_function(y, *y_range.T)
         
         #do backward pass
         loss.backward()
@@ -236,72 +289,53 @@ for epoch in range(num_epochs):
     
     
 # %% scoring function
-def score(model, test_dataset, batch_size=256):
+def score(model, test_dataset, batch_size=1024):
     dataloader = DataLoader(test_dataset, batch_size=batch_size)
-    logtheta = np.array([])
-    logk = np.array([])
+    y = np.array([])
+    y_range = None
     for x, t in dataloader:
         x,t = x.to(device), t.to(device)
         with torch.no_grad():
             model.train = False
-            out_logtheta, out_logk = model(x)
+            out_y, out_yrange = model(x,t)
         model.train = True
-        out_logtheta, out_logk = out_logtheta.detach().cpu().numpy(), out_logk.detach().cpu().numpy()
-        logtheta = np.concatenate([logtheta, out_logtheta])
-        logk = np.concatenate([logk, out_logk])
+        out_y, out_yrange = out_y.detach().cpu().numpy(), out_yrange.detach().cpu().numpy()
+        y = np.concatenate([y, out_y])
+        y_range = np.concatenate([y_range, out_yrange], axis=0) if y_range is not None else out_yrange
         
     t = test_dataset[:][1].detach().cpu().numpy()
         
-    return logtheta, logk, t
+    return y, y_range, t
 
-def score_values(model, test_dataset, rescale=True, batch_size=256):
-    logtheta, logk, t = score(model, test_dataset, batch_size)
-    theta = np.exp(logtheta)
-    k = np.exp(logk)
-    mean = k * theta
-    mode = np.where(k>=1, (k-1)*theta, 0)
-    std = np.sqrt(k * theta**2)
+def score_values(model, test_dataset, batch_size=1024):
+    y, y_range, t = score(model, test_dataset, batch_size)
+    e_yrange = np.exp(y_range)
+    Z = (e_yrange * delta_t).sum(axis=1)
+    p_dist = e_yrange/Z.reshape(-1,1)
+    p = np.exp(y) / Z
+    t_ev = (e_yrange * delta_t * t_range).sum(axis=1) / Z
     
-    if rescale:
-        mean *= 1e5
-        mode *= 1e5
-        std *= 1e5
-        t *= 1e5
-    
-    return pd.DataFrame({
-        'theta': theta,
-        'k': k,
-        'target': t,
-        'mean_pred': mean,
-        'mode_pred': mode,
-        'std_pred': std
-        })
+    return p, p_dist, t, t_ev
 
-# %% score and evalute test set
+# %%
+p, p_dist, t, t_ev = score_values(model, test_dataset)
 
-scored_test = score_values(model, test_dataset, rescale=True)
+print(r2_score(t, t_ev)) #0.7498564316198878
 
-print(r2_score(scored_test['target'], scored_test['mean_pred'])) #0.7241962778997396
-
-
-# %% plot gamma function
-def plot_gamma(theta, k, true_val=None, ev=None, x_max=20, x_step=0.01):
-    
-    x = np.arange(0.0, x_max+x_step, x_step)
-    y = x**(k-1) * np.exp(-x / theta) / scipy.special.gamma(k) / theta**k
-    
+# %% plot learned pdf function
+def plot_dist(p_dist, t, tev=None, t_range=t_range):
+        
     fig, ax = plt.subplots()
-    ax.plot(x,y)
+    ax.plot(t_range, p_dist)
     
-    ax.set(xlabel='x', ylabel=f'gamma(x; {round(k,2)}, {round(theta,2)})',
-           title = f'Gamma Distribution with k={round(k,2)}, theta={round(theta,2)}')
+    ax.set(xlabel='t', ylabel='learned target dist',
+           title = 'learned target distribution')
     ax.grid()
     
-    if true_val:
-        plt.axvline(x=true_val, color='b')
-        
-    if ev:
-        plt.axvline(x=ev, color='r')
+    plt.axvline(x=t, color='b')
+    
+    if tev:
+        plt.axvline(x=tev, color='r')
     
     plt.show()
     
@@ -314,10 +348,11 @@ x = X_test[idx,:]
 
 pprint({feature: val for feature, val in zip(features, x)})
 
-scored_sample = scored_test.iloc[idx,:]
-pprint(scored_sample)
+t_sample = t[idx]
+p_dist_sample = p_dist[idx,:]
+tev_sample = t_ev[idx]
 
-true_val = scored_sample['target'] / 1e5
-ev = scored_sample['mean_pred'] / 1e5
+print(f'target: {t_sample}')
+print(f'E[t]: {tev_sample}')
 
-plot_gamma(scored_sample['theta'], scored_sample['k'], true_val=true_val, ev=ev)
+plot_dist(p_dist_sample, t_sample, tev_sample, t_range)
