@@ -80,27 +80,32 @@ def numeric_integral(function_tensor, delta_t):
 # %% torch device
 device = torch.device('cuda:0')
 
+# %% mc integration
+def mc_integrate(t_samples, target_range):
+    return torch.mean(t_samples * (target_range[1] - target_range[0]), axis=1)
+
 # %% write custom loss for learned target PDF using numeric integration
 class LearnedPDFIntegration(Function):
     
     @staticmethod
-    def forward(ctx, y, *y_range):
+    def forward(ctx, y, target_range, *y_range):
         #import pdb; pdb.set_trace()
         y_range = torch.stack(y_range, dim=1).to(device)
-        Z = torch.sum(torch.exp(y_range), axis=1).to(device)
-        ctx.save_for_backward(y, y_range, Z)
+        Z = mc_integrate(torch.exp(y_range), target_range).to(device)
+        ctx.save_for_backward(y, y_range, Z, target_range)
         loss = -y + torch.log(Z)
         return loss.mean()
     
     @staticmethod
     def backward(ctx, grad_output):
         #import pdb; pdb.set_trace()
-        y, y_range, Z = ctx.saved_tensors
+        y, y_range, Z, target_range = ctx.saved_tensors
         
         y_grad = -1 * grad_output * torch.ones(y.shape).to(device)
-        y_range_grad = torch.div(torch.exp(y_range), Z.reshape(-1,1))
+        summand = torch.exp(y_range) * (target_range[1] - target_range[0]) / y_range.shape[1]
+        y_range_grad = torch.div(summand, Z.reshape(-1,1))
         
-        return y_grad, *y_range_grad.T
+        return y_grad, None, *y_range_grad.T
 
     
     
@@ -171,24 +176,7 @@ class learned_pdf_integral_mlp(nn.Module):
     
         #creating x_reshape and/or t_range (or x_t_range) takes forever,
         #find a more efficient way to do this
-# %% 
-#layer = nn.Linear(3,1)
-#x = torch.randn([10,2])
-#t = torch.randn([10,8])
-#t_reshape = t[:,:, None]
-##x_reshape = x.unsqueeze(2).expand(10,2,8)
-#x_reshape = x.unsqueeze(1).expand(10,8,2)
-#
-#x_t = torch.cat([x_reshape, t_reshape], axis=2)
-#i=0
-#layer(x_t[:,:,i])
-#layer(torch.cat([x, t[:,i].reshape(-1,1)], axis=1))
-#
-#layer(x_t)
-#
-#
-#x_t_reshape = x_t.reshape(-1, 3)
-#y_range = layer()
+
 # %% function to evaluate dataset
 def eval_dataset(model, loss_function, dataloader, device):
     
@@ -198,7 +186,7 @@ def eval_dataset(model, loss_function, dataloader, device):
         x, t = x.to(device), t.to(device)
         y, y_range = model.integration_forward(x,t)
         y, y_range = y.to(device), y_range.to(device)
-        loss = loss_function(y, *y_range.T)
+        loss = loss_function(y, torch.tensor(target_range), *y_range.T)
         batch_loss = loss.item()
         epoch_loss += batch_loss
         
@@ -218,11 +206,11 @@ test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
 # %% create model
 mlp_dims = [2048, 2048, 1024]
 #mc_samples = 10
-mc_samples = 40
+mc_samples = 30
 #mc_samples = 1
 dropout = 0.1
-mlp_activation = nn.ReLU()
-#mlp_activation = nn.Tanh()
+#mlp_activation = nn.ReLU()
+mlp_activation = nn.Tanh()
 
 model = learned_pdf_integral_mlp(
     vector_dim=X_train.shape[1],
@@ -278,7 +266,7 @@ for epoch in range(num_epochs):
         y, y_range = y.to(device), y_range.to(device)
         
         #compute loss
-        loss = loss_function(y, *y_range.T)
+        loss = loss_function(y, torch.tensor(target_range), *y_range.T)
         
         #do backward pass
         loss.backward()
@@ -364,7 +352,11 @@ print(f'index: {idx}')
 
 x = X_test[idx,:]
 
-pprint({feature: val for feature, val in zip(features, x)})
+feature_dict = {feature: val for feature, val in zip(features, x)}
+feature_dict['area'] =\
+    scaler.inverse_transform(np.array([feature_dict['area_scaled']]).reshape(-1,1))[0][0]
+del feature_dict['area_scaled']
+pprint(feature_dict)
 
 t_sample = t[idx]
 p_dist_sample = p_dist[idx,:]
