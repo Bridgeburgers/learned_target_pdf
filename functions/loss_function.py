@@ -27,7 +27,7 @@ class LearnedPDFMCIntegration(Function):
     def backward(ctx, grad_output):
         y, y_range, Z, target_range = ctx.saved_tensors
         device = y.device
-        
+
         y_grad = -grad_output * torch.ones(y.shape).to(device)
         summand = torch.exp(y_range) * (target_range[1] - target_range[0]) / y_range.shape[1]
         y_range_grad = torch.div(summand, Z.reshape(-1,1))
@@ -53,4 +53,4 @@ class LearnedPDFNumericIntegration(Function):
         y_grad = -grad_output * torch.ones(y.shape).to(device)
         y_range_grad = torch.div(torch.exp(y_range) * delta_t, Z.reshape(-1,1))
         
-        return y_grad, *y_range_grad.T
+        return y_grad, None, *y_range_grad.T

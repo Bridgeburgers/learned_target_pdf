@@ -9,19 +9,26 @@ import numbers
 
 class learned_pdf_mc_mlp(nn.Module):
     def __init__(self, vector_dim, hidden_dims, target_range, device, 
-                 mc_samples=10, delta_t=0.01, mlp_activation=nn.ReLU(), 
-                 dropout=0.1, torch_seed=123):
+                 mc_samples=10, delta_t=torch.tensor(0.01), 
+                 mlp_activation=nn.ReLU(), dropout=0.1, torch_seed=123):
         super().__init__()
         
-        torch.random.seed(torch_seed)
+        torch.manual_seed(torch_seed)
         
         self.t_range = torch.arange(target_range[0], target_range[1]+delta_t, delta_t).to(device)
         self.mc_samples = mc_samples
-        self.target_range = target_range
         self.device = device
+        
+        if not torch.is_tensor(target_range):
+            target_range = torch.tensor(target_range)
+        self.target_range = target_range
         
         if isinstance(hidden_dims, numbers.Number):
             hidden_dims = [hidden_dims]
+            
+        if isinstance(delta_t, numbers.Number):
+            delta_t = torch.tensor(delta_t)
+        self.delta_t = delta_t
         
         hidden_dims = [vector_dim + 1] + hidden_dims
         mlp_layers = [
@@ -68,7 +75,7 @@ class learned_pdf_mc_mlp(nn.Module):
     
     def integration_forward(self, x, t):
         y = self.y_single_t_sample(x,t)
-        y_range = self.y_multiple_t_samples(x, self.y_range)
+        y_range = self.y_multiple_t_samples(x, self.t_range)
         
         return y, y_range
 
