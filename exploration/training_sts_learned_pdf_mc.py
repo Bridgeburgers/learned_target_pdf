@@ -118,6 +118,11 @@ train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True
 eval_dataloader = DataLoader(eval_dataset, batch_size=batch_size)
 test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
 
+# %% dot product
+def dot(x1, x2):
+    return (x1 * x2).sum(axis=1)
+
+
 # %% create a model class with learned pdf mc layer
 class sentence_transformer_mc_pdf(torch.nn.Module):
     
@@ -163,6 +168,56 @@ class sentence_transformer_mc_pdf(torch.nn.Module):
     def integration_forward(self, encoded_sentence1, encoded_sentence2, t):
         x = self.st_forward(encoded_sentence1, encoded_sentence2)
         return self.learned_pdf_layer.integration_forward(x,t)
+
+# %% create model class as above, but this time multiplying, rather than concating text vector
+class sentence_transformer_dot_mc_pdf(torch.nn.Module):
+    
+    def __init__(self, transformer, hidden_dims, target_range, device,
+                 mc_samples=10, delta_t=torch.tensor(0.1),
+                 mlp_activation=torch.nn.ReLU(), dropout=0.1, torch_seed=123):
+        
+        super().__init__()
+        
+        #self.sentence_transformer = sentence_transformer
+        self.transformer = transformer
+        self.device = device
+        
+        transformer_dim =\
+            list(self.transformer.named_parameters())[-1][1].shape[0]
+            
+        self.learned_pdf_layer = lyr.learned_pdf_mc_mlp(
+            vector_dim=transformer_dim, hidden_dims=hidden_dims, 
+            target_range=target_range, device=device, mc_samples=mc_samples,
+            delta_t=delta_t, mlp_activation=mlp_activation, dropout=dropout,
+            torch_seed=torch_seed)
+        
+        self.delta_t = self.learned_pdf_layer.delta_t
+        self.target_range = self.learned_pdf_layer.target_range
+        self.t_range = self.learned_pdf_layer.t_range
+    
+    def sentence_embed(self, encoded_sentences):
+        out = bert(**encoded_sentences)
+        classification_out = out.last_hidden_state[:,0,:]
+        return classification_out
+        
+    def st_forward(self, encoded_sentence1, encoded_sentence2):
+        s1_vec = self.sentence_embed(encoded_sentence1)
+        s2_vec = self.sentence_embed(encoded_sentence2)
+        
+        #return torch.concat(
+        #    [s1_vec, s2_vec], axis=1).to(self.device)
+        #return s1_vec * s2_vec
+        #return s1_vec + s2_vec
+        return (s1_vec * s2_vec) / ((dot(s1_vec, s1_vec) * dot(s2_vec, s2_vec)).sqrt()).unsqueeze(-1)
+        
+            
+    def forward(self, encoded_sentence1, encoded_sentence2, t):
+        x = self.st_forward(encoded_sentence1, encoded_sentence2)
+        return self.learned_pdf_layer.forward(x, t)
+    
+    def integration_forward(self, encoded_sentence1, encoded_sentence2, t):
+        x = self.st_forward(encoded_sentence1, encoded_sentence2)
+        return self.learned_pdf_layer.integration_forward(x,t)
     
 # %% define eval function
 def learned_pdf_eval(model, loss_function, dataloader, device, delta_t=None,
@@ -195,15 +250,15 @@ def learned_pdf_eval(model, loss_function, dataloader, device, delta_t=None,
     return(epoch_loss)
 
 # %% create model
-hidden_dims = [1024]
+hidden_dims = [1024, 1024]
 target_range = [0,1]
 mc_samples = 60
-delta_t = 0.1 
+delta_t = 0.01
 mlp_activation = torch.nn.ReLU()
 dropout=0.1 
 torch_seed = 123
 
-model = sentence_transformer_mc_pdf(
+model = sentence_transformer_dot_mc_pdf(
     transformer=bert,
     hidden_dims=hidden_dims,
     target_range=target_range,
@@ -233,6 +288,9 @@ loss_function = lf.LearnedPDFMCIntegration.apply
 
 torch.cuda.empty_cache()
 gc.collect()
+
+train_loss = []
+eval_loss = []
 
 for epoch in range(num_epochs):
     print(f'Starting epoch {epoch+1}')
@@ -278,10 +336,12 @@ for epoch in range(num_epochs):
     print('-' * 20)
     print(f'Loss after epoch {epoch+1}: {epoch_loss}')
     
-    test_epoch_loss = learned_pdf_eval(model, loss_function, test_dataloader, device)
-    print(f'test loss after epoch {epoch+1}: {test_epoch_loss}')
+    eval_epoch_loss = learned_pdf_eval(model, loss_function, eval_dataloader, device)
+    print(f'eval loss after epoch {epoch+1}: {eval_epoch_loss}')
     print()
     
+    train_loss.append(epoch_loss)
+    eval_loss.append(eval_epoch_loss)
     
 # %% check if model weights are changing
 list(model.transformer.named_parameters())[0]

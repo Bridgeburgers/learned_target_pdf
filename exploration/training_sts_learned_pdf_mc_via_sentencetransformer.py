@@ -38,8 +38,11 @@ device = torch.device('cuda:0')
 st = SentenceTransformer(model_name)
 st = st.to(device)
 
-st.encode('hello', requires_grad=True)
+# %%
+v = st.encode(['hello', 'hi this is sentence'], requires_grad=True, convert_to_tensor=True)
+w = st.encode(['sentence one', 'sentence two'], requires_grad=True, convert_to_tensor=True)
 
+dot = v*w
 # %% 2. Load the STSB dataset: https://huggingface.co/datasets/sentence-transformers/stsb
 train_dataset = load_dataset("sentence-transformers/stsb", split="train")
 eval_dataset = load_dataset("sentence-transformers/stsb", split="validation")
@@ -68,7 +71,7 @@ class sentence_transformer_mc_pdf(torch.nn.Module):
             self.sentence_transformer.get_sentence_embedding_dimension()
             
         self.learned_pdf_layer = lyr.learned_pdf_mc_mlp(
-            vector_dim=transformer_dim*2, hidden_dims=hidden_dims, 
+            vector_dim=transformer_dim, hidden_dims=hidden_dims, 
             target_range=target_range, device=device, mc_samples=mc_samples,
             delta_t=delta_t, mlp_activation=mlp_activation, dropout=dropout,
             torch_seed=torch_seed)
@@ -78,18 +81,24 @@ class sentence_transformer_mc_pdf(torch.nn.Module):
         self.t_range = self.learned_pdf_layer.t_range
         
     def sentence_embed(self, sentence):
-        encoded_input = self.sentence_transformer.tokenize(sentence)
-        encoded_input['input_ids'] = encoded_input['input_ids']#.to(device)
-        encoded_input['attention_mask'] = encoded_input['attention_mask']#.to(device)
-        return self.sentence_transformer(encoded_input)['sentence_embedding']#.to(device)
+        #encoded_input = self.sentence_transformer.tokenize(sentence)
+        #encoded_input['input_ids'] = encoded_input['input_ids']#.to(device)
+        #encoded_input['attention_mask'] = encoded_input['attention_mask']#.to(device)
+        #return self.sentence_transformer(encoded_input)['sentence_embedding']#.to(device)
+        return self.sentence_transformer.encode(
+            sentence, requires_grad=True, convert_to_tensor=True)
+
     
     def st_forward(self, sentence1, sentence2):
-        s1_vec = self.sentence_transformer.encode(sentence1)
-        s2_vec = self.sentence_transformer.encode(sentence2)
+        #s1_vec = self.sentence_transformer.encode(sentence1)
+        #s2_vec = self.sentence_transformer.encode(sentence2)
+        s1_vec = self.sentence_embed(sentence1)
+        s2_vec = self.sentence_embed(sentence2)
 
         
-        return torch.cat(
-            [torch.tensor(s1_vec), torch.tensor(s2_vec)], axis=1).to(self.device)
+        #return torch.cat(
+        #    [torch.tensor(s1_vec), torch.tensor(s2_vec)], axis=1).to(self.device)
+        return s1_vec * s2_vec
             
     def forward(self, sentence1, sentence2, score):
         x = self.st_forward(sentence1, sentence2)
@@ -141,6 +150,8 @@ loss_function = lf.LearnedPDFMCIntegration.apply
 torch.cuda.empty_cache()
 gc.collect()
 
+train_loss = []
+val_loss = []
 for epoch in range(num_epochs):
     print(f'Starting epoch {epoch+1}')
     
@@ -184,10 +195,12 @@ for epoch in range(num_epochs):
     epoch_loss /= len(train_dataloader)
     print('-' * 20)
     print(f'Loss after epoch {epoch+1}: {epoch_loss}')
+    train_loss.append(epoch_loss)
     
     test_epoch_loss = score_module.learned_pdf_eval(model, loss_function, test_dataloader, device)
     print(f'test loss after epoch {epoch+1}: {test_epoch_loss}')
     print()
+    val_loss.append(test_epoch_loss)
     
     
 # %% check if model weights are changing
