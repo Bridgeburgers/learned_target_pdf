@@ -139,7 +139,7 @@ class sentence_transformer_mc_pdf(torch.nn.Module):
         transformer_dim =\
             list(self.transformer.named_parameters())[-1][1].shape[0]
             
-        self.learned_pdf_layer = lyr.learned_pdf_mc_mlp(
+        self.learned_pdf_layer = lyr.Learned_Pdf_MC_MLP(
             vector_dim=transformer_dim*2, hidden_dims=hidden_dims, 
             target_range=target_range, device=device, mc_samples=mc_samples,
             delta_t=delta_t, mlp_activation=mlp_activation, dropout=dropout,
@@ -196,7 +196,7 @@ class sentence_transformer_dot_mc_pdf(torch.nn.Module):
         self.t_range = self.learned_pdf_layer.t_range
     
     def sentence_embed(self, encoded_sentences):
-        out = bert(**encoded_sentences)
+        out = self.transformer(**encoded_sentences)
         classification_out = out.last_hidden_state[:,0,:]
         return classification_out
         

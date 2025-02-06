@@ -54,3 +54,27 @@ class LearnedPDFNumericIntegration(Function):
         y_range_grad = torch.div(torch.exp(y_range) * delta_t, Z.reshape(-1,1))
         
         return y_grad, None, *y_range_grad.T
+    
+    
+class LearnedPDFMCImportanceSampling(Function):
+    
+    @staticmethod
+    def forward(ctx, y, q, *y_range):
+        device = y.device
+        y_range = torch.stack(y_range, dim=1).to(device)
+        MZ = (torch.exp(y_range) / q).sum(dim=1).to(device) #MZ implies Z * # of MC samples (M)
+        M = q.shape[1]
+        ctx.save_for_backward(y, y_range, q, MZ)
+        loss = -y + torch.log(MZ / M)
+        return loss.mean()
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        y, y_range, q, MZ = ctx.saved_tensors
+        device = y.device
+
+        y_grad = -grad_output * torch.ones(y.shape).to(device)
+        summand = torch.exp(y_range) / q * grad_output
+        y_range_grad = torch.div(summand, MZ.reshape(-1,1))
+        
+        return y_grad, None, *y_range_grad.T
