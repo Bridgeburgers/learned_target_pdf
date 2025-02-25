@@ -27,6 +27,8 @@ import functions.layers as lyr
 import functions.loss_function as lf
 import functions.utility as utl
 
+pd.options.display.max_rows=500
+
 # %% rmsle
 rmsle = lambda y_true, y_pred: np.sqrt(((np.log(y_pred + 1) - np.log(y_true + 1))**2).sum()/len(y_pred))
 
@@ -53,8 +55,7 @@ print(n_params)
 # the data can be downloaded from https://www.kaggle.com/c/mercari-price-suggestion-challenge/data
 path = 'D:/Documents/Data/kaggle_mercari_price_data/'
 train_df = pd.read_csv(os.path.join(path, 'train.tsv'), sep='\t')
-test_df = pd.read_csv(os.path.join(path, 'test.tsv'), sep='\t')
-test_stg2_df = pd.read_csv(os.path.join(path, 'test_stg2.tsv'), sep='\t')
+test_df = pd.read_csv(os.path.join(path, 'test_stg2.tsv'), sep='\t')
 
 sample_submission_df = pd.read_csv(os.path.join(path, 'sample_submission_stg2.csv'))
 
@@ -70,7 +71,7 @@ val = val.reset_index(drop=True)
 
 # %% fill nulls for all fields that contain them
 
-for df in train, val, test_df, test_stg2_df:
+for df in train, val, test_df:
     df.loc[df['item_description'].isnull(), 'item_description'] = ''
     
 # %% remove zeroes in target
@@ -82,7 +83,6 @@ for col in ['item_description', 'name']:
     train[col] = train[col].str.lower()
     val[col] = val[col].str.lower()
     test_df[col] = test_df[col].str.lower()
-    test_stg2_df[col] = test_stg2_df[col].str.lower()
     
 # %% other imputation for category and brand
 label_cols = ['category_name', 'brand_name']
@@ -93,7 +93,6 @@ other_imp = utl.Other_Imputer(label_cols, other_percentile, other_val='OTHER')
 train = other_imp.fit_transform(train)
 val = other_imp.transform(val)
 test_df = other_imp.transform(test_df)
-test_stg2_df = other_imp.transform(test_stg2_df)
 
 
 # %% label encoding for category and brand
@@ -102,7 +101,6 @@ enc = utl.Other_Ordinal_Encoder(label_cols, 'OTHER')
 train = enc.fit_transform(train)
 val = enc.transform(val)
 test_df = enc.transform(test_df)
-test_stg2_df = enc.transform(test_stg2_df)
 
 # %% get num unique values for category_name and brand_name
 n_unique_category = train['category_name'].nunique() 
@@ -128,13 +126,13 @@ def concat_ohe_cols(df):
 train = concat_ohe_cols(train)
 val = concat_ohe_cols(val)
 test_df = concat_ohe_cols(test_df)
-test_stg2_df = concat_ohe_cols(test_stg2_df)
 
 # %% define numeric features
 numeric_features = list(ohe.get_feature_names_out()[0:4]) + ['shipping']
 
 # %% create gammma_bins (decile bins) for the target
-bin_creator = utl.Gamma_Bin_Creator(num_bins=5, fit_all_higher_bins=True, quantile=True)
+num_bins = 1000
+bin_creator = utl.Gamma_Bin_Creator(num_bins=num_bins, fit_all_higher_bins=True, quantile=True)
 train['gamma_bins'] = bin_creator.fit_transform(train['price'].values)
 val['gamma_bins'] = bin_creator.transform(val['price'].values)
 # %% create dataset class
@@ -202,7 +200,7 @@ val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
 
 # %% target range
 #target_range = [0, train['price'].max()]
-target_range = [0.,500.]
+target_range = [0.,600.]
 # %% create a model class with learned pdf mc layer
 class learned_target_bert_model(torch.nn.Module):
     
@@ -314,7 +312,7 @@ def gamma_model_eval(model, loss_function, dataloader, device):
     return(epoch_loss)
 
 # %% create model
-mc_samples=50
+mc_samples=40
 delta_t = torch.tensor(0.5)
 hidden_dims = [1024, 1024]
 category_embedding_dim = 512
@@ -362,7 +360,7 @@ torch.manual_seed(seed)
 optimizer = torch.optim.AdamW(params=model.parameters(), 
                               lr=learning_rate, weight_decay=weight_decay)
 
-loss_function = lf.LearnedPDFMCImportanceSampling.apply
+loss_function = lf.LearnedPDFImportanceSampling.apply
 # %% perform training loop 
 
 torch.cuda.empty_cache()
@@ -483,8 +481,15 @@ def learned_pdf_score(model, test_dataset, batch_size=128, batch_fraction=0.05,
 # %% score and evalute test set
 p, p_dist, t, t_ev = learned_pdf_score(model, val_dataset, batch_fraction=1)
 
-print(r2_score(t, t_ev)) #0.425593043329873
-print(rmsle(t, t_ev)) #0.4790678534193915
+print(r2_score(t, t_ev)) #0.4828081591089223
+print(rmsle(t, t_ev)) #0.460160534259534
+
+# %% get the mode
+t_range=model.t_range.detach().cpu().numpy()
+t_mode = t_range[np.argmax(p_dist, axis=1)]
+
+print(r2_score(t, t_mode)) #0.4303658996651404
+print(rmsle(t, t_mode)) #0.4919840923614449
 
 # %% plot learned pdf function
 def plot_dist(p_dist, t=None, tev=None, t_range=model.t_range.detach().cpu().numpy()):
@@ -507,11 +512,11 @@ def plot_dist(p_dist, t=None, tev=None, t_range=model.t_range.detach().cpu().num
     
     plt.show()
     
-# %%
-t_range=model.t_range.detach().cpu().numpy()
 # %% sample a result and show the plot
 
-idx = random.randrange(len(p))
+#idx = random.randrange(len(p))
+idx = np.random.choice(np.where(t>=400)[0],1)[0]
+
 print(f'index: {idx}')
 
 data = val.iloc[idx,:]

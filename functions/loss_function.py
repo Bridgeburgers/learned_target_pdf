@@ -56,7 +56,7 @@ class LearnedPDFNumericIntegration(Function):
         return y_grad, None, *y_range_grad.T
     
     
-class LearnedPDFMCImportanceSampling(Function):
+class LearnedPDFImportanceSampling(Function):
     
     @staticmethod
     def forward(ctx, y, q, *y_range):
