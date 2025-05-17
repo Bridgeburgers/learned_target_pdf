@@ -1,30 +1,36 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+from pprint import pprint
+
 import functions.data_simulator as ds
 
 # %% set parameters
-# mu1 = a1 sin(b11 x1 + b12 x2 + phi1)
-#sigma1 = d1 + c1 sqrt(x1^2 + x2^2) / (abs(x5) + 0.05)
-#mu2 = a2 sin(b21 x3 + b22 x4 + phi2)
-#sigma2 = d2 + c2 sqrt(x3^2 + x4^2) / (abs(x5) + 0.05)
-#pi = 1 / (1 + exp(-a3 x5 + b3))
-
+# =============================================================================
+#         mu1 = self.a1 * np.sin(self.b1 * (x1 + x2) + self.phi1)
+#         sigma1 = self.d1 + self.c1 * np.sqrt(x1**2 + x3**2) / (np.abs(x5) + 0.05)
+# 
+#         mu2 = self.a2 * np.sin(self.b2 * (x3 + x4) + self.phi2)
+#         sigma2 = self.d2 + self.c2 * np.sqrt(x2**2 + x4**2) / (np.abs(x5) + 0.05)
+# 
+#         pi = 1 / (1 + np.exp(-self.a3 * x5 + self.b3))
+# =============================================================================
+        
 params = dict(
-    a1 = 8.,
-    b1 = 10.,
-    phi1 = 0,
-    c1 = 2.,
-    d1 = 1.,
-    a2 = 4.,
-    b2 = 5.,
+    a1 = 50.,
+    b1 = 2 * np.pi,
+    phi1 = 0, 
+    c1 = 8.,
+    d1 = 0.,
+    a2 = 50.,
+    b2 = np.pi,
     phi2 = np.pi/2,
-    c2 = 2.,
-    d2 = 1.,
-    a3 = -1.,
-    b3 = 0.2,
+    c2 = 3.5,
+    d2 = 0.,
+    a3 = 1.,
+    b3 = 0.5,
     delta_t = 0.01,
-    target_range = [-20., 20.],
+    target_range = [-80., 80.],
 )
 
 n_samples = 10000
@@ -60,7 +66,15 @@ plt.legend()
 
 plt.show()
 
-print({
+pprint({
+    'x1': xi[0],
+    'x2': xi[1],
+    'x3': xi[2],
+    'x4': xi[3],
+    'x5': xi[4]
+})
+
+pprint({
     'mu1': float(mu1),
     'sigma1': float(sigma1),
     'mu2': float(mu2),
@@ -72,3 +86,4 @@ print({
 plt.hist(t, bins=200)
 plt.xlim(-100, 100)
 plt.show()
+plt.close()
